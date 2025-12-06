@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roguelike 地城探索</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #ccc;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: monospace; 
+            overflow: hidden; 
+            font-size: 14px; 
+        }
+
+        /* 讓遊戲畫面、側邊欄位和控制按鈕並排 */
+        #game-wrapper {
+            display: flex; 
+            gap: 20px;     
+            align-items: flex-start; 
+        }
+
+        /* 將側邊欄和控制按鈕放在一起，垂直排列 */
+        #right-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        #game-container {
+            border: 1px solid #444;
+            padding: 10px;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.2);
+        }
+
+        /* 側邊欄位樣式 */
+        #sidebar {
+            width: 200px; 
+            padding: 10px;
+            border: 1px solid #444;
+            background-color: #111;
+            font-size: 14px;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+        }
+        #sidebar p {
+            margin: 5px 0;
+        }
+
+        /* 虛擬方向鍵區塊 */
+        #controls {
+            padding: 10px;
+            border: 1px solid #444;
+            background-color: #111;
+            text-align: center;
+        }
+
+        #dpad {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr); /* 創建 3x3 網格 */
+            gap: 5px;
+            margin-top: 10px;
+        }
+
+        #dpad button {
+            width: 50px;
+            height: 50px;
+            font-size: 20px;
+            background-color: #333;
+            color: #fff;
+            border: 1px solid #666;
+            cursor: pointer;
+            border-radius: 5px;
+            line-height: 1; /* 確保箭頭居中 */
+            padding: 0; /* 移除內邊距 */
+            touch-action: manipulation; /* 增強手機響應 */
+        }
+
+        #dpad button:active {
+            background-color: #555;
+        }
+
+        .rot-app {
+            user-select: none; 
+        }
+    </style>
+    
+    <script src="https://cdn.jsdelivr.net/npm/rot-js@2/dist/rot.min.js"></script>
+    
+</head>
+<body>
+    <div id="game-wrapper">
+        <div id="game-container">
+            <div id="game-display"></div>
+            <p>🗺️ **地城日誌:** <span id="log">載入中...</span></p>
+        </div>
+
+        <div id="right-panel">
+            <div id="sidebar">
+                <h3 style="color: gold;">🧑‍💻 玩家狀態</h3>
+                <p>等級: <span id="s_level">1</span></p>
+                <p>經驗值: <span id="s_exp">0</span> / <span id="s_exp_next">10</span></p>
+                <hr>
+                <p style="color: red;">HP: <span id="s_hp">10</span> / <span id="s_maxhp">10</span></p>
+                <p style="color: orange;">ATK: <span id="s_atk">3</span></p>
+                <p style="color: aqua;">DEF: <span id="s_def">1</span></p>
+                <hr>
+                <p>裝備: <span id="s_equipment">無</span></p>
+            </div>
+
+            <div id="controls">
+                <h3 style="color: #ccc;">📱 移動控制 (觸控)</h3>
+                <div id="dpad">
+                    <button data-dir="up-left">↖</button>
+                    <button data-dir="up">↑</button>
+                    <button data-dir="up-right">↗</button>
+                    
+                    <button data-dir="left">←</button>
+                    <button data-dir="wait">·</button>
+                    <button data-dir="right">→</button>
+                    
+                    <button data-dir="down-left">↙</button>
+                    <button data-dir="down">↓</button>
+                    <button data-dir="down-right">↘</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 遊戲設定 ---
+        const WIDTH = 60;
+        const HEIGHT = 30;
+        const TILE_MAP = {}; 
+
+        // --- 實體 (Entities) 管理 ---
+        let entities = []; 
+
+        // --- 玩家物件 ---
+        let player = {
+            x: 0,
+            y: 0,
+            symbol: '@',
+            color: 'green',
+            hp: 10,
+            maxHp: 10,
+            attack: 3,
+            defense: 1, 
+            level: 1, 
+            exp: 0, 
+            expToNextLevel: 10, 
+            equipment: '無', 
+            isPlayer: true
+        };
+
+        // --- 遊戲核心物件 ---
+        let display = null;
+        let fov = null;
+
+        // --- 1. 初始化遊戲 ---
+        function initGame() {
+            display = new ROT.Display({
+                width: WIDTH,
+                height: HEIGHT,
+                spacing: 1.1, 
+                bg: '#000',
+            });
+            const gameDisplay = document.getElementById("game-display");
+            if (gameDisplay) {
+                gameDisplay.appendChild(display.getContainer());
+            } else {
+                console.error("找不到 game-display 元素！");
+                return;
+            }
+            
+            generateMap();
+            fov = new ROT.FOV.RecursiveShadowcasting(isPassable);
+            entities.push(player);
+
+            for (let i = 0; i < 3; i++) {
+                placeMonster();
+            }
+            placeItem(); 
+
+            drawScreen();
+            updateSidebar(); 
+            
+            // 監聽鍵盤輸入 (傳遞 event)
+            window.addEventListener("keydown", (e) => handleInput(e, null)); 
+
+            // **** 虛擬按鈕監聽器 ****
+            const buttons = document.querySelectorAll('#dpad button');
+            buttons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const dir = button.getAttribute('data-dir');
+                    // 點擊事件不傳遞 event，只傳遞方向 (dir)
+                    handleInput(null, dir);
+                });
+            });
+
+            logMessage(`歡迎！地城已生成。`);
+        }
+
+        // 隨機放置寶物
+        function placeItem() {
+            const item = {
+                x: 0, y: 0,
+                symbol: '!', 
+                color: 'yellow',
+                isItem: true 
+            };
+
+            const freeCells = Object.keys(TILE_MAP).filter(key => TILE_MAP[key] === '.');
+            if (freeCells.length > 0) {
+                const index = Math.floor(ROT.RNG.getUniform() * freeCells.length);
+                const [x, y] = freeCells[index].split(',').map(Number);
+
+                const entityHere = entities.find(e => e.x === x && e.y === y);
+                if (!entityHere) {
+                    item.x = x;
+                    item.y = y;
+                    entities.push(item);
+                }
+            }
+        }
+
+        // 隨機放置怪物
+        function placeMonster() {
+            const monster = {
+                x: 0, y: 0,
+                symbol: 'G', 
+                color: 'red',
+                hp: 5,
+                maxHp: 5, 
+                attack: 2,
+                defense: 0, 
+                isPlayer: false
+            };
+
+            const freeCells = Object.keys(TILE_MAP).filter(key => TILE_MAP[key] === '.');
+            if (freeCells.length > 0) {
+                const index = Math.floor(ROT.RNG.getUniform() * freeCells.length);
+                const [x, y] = freeCells[index].split(',').map(Number);
+
+                const entityHere = entities.find(e => e.x === x && e.y === y);
+                if (x !== player.x || y !== player.y || !entityHere) {
+                    monster.x = x;
+                    monster.y = y;
+                    entities.push(monster);
+                    return;
+                }
+            }
+        }
+
+        // --- 2. 地圖生成 ---
+        function generateMap() {
+            const digger = new ROT.Map.Digger(WIDTH, HEIGHT);
+            digger.create(function(x, y, value) {
+                if (value) { TILE_MAP[`${x},${y}`] = '#'; } else { TILE_MAP[`${x},${y}`] = '.'; }
+            });
+
+            const rooms = digger.getRooms();
+            const startRoom = rooms[0];
+            const center = startRoom.getCenter();
+            player.x = center[0];
+            player.y = center[1];
+        }
+
+        function isPassable(x, y) { return TILE_MAP[`${x},${y}`] === '.'; }
+
+        function isWalkable(x, y) {
+            if (TILE_MAP[`${x},${y}`] === '#') return false; 
+            const entityHere = entities.find(e => e.x === x && e.y === y && e !== this);
+            return !entityHere;
+        }
+
+        function drawScreen() {
+            display.clear(); 
+            fov.compute(player.x, player.y, 8, function(x, y, r, visibility) {
+                const key = `${x},${y}`;
+                const tile = TILE_MAP[key] || '#';
+                const entityHere = entities.find(e => e.x === x && e.y === y);
+                
+                if (visibility) {
+                    if (entityHere) {
+                        display.draw(x, y, entityHere.symbol, entityHere.color, '#000');
+                    } else {
+                        let tileColor = tile === '#' ? '#888' : '#333';
+                        display.draw(x, y, tile, tileColor, '#000');
+                    }
+                } else {
+                    if (tile === '#') { display.draw(x, y, '#', '#111'); } else if (tile === '.') { display.draw(x, y, '.', '#080808'); }
+                }
+            });
+        }
+
+        // --- 4. 遊戲回合處理 ---
+        // 接受 event (鍵盤) 或 dir (點擊)
+        function handleInput(event, dir = null) {
+            if (player.hp <= 0) { logMessage("你已經死亡了。遊戲結束！"); return; }
+            
+            let dx = 0;
+            let dy = 0;
+
+            // 處理鍵盤輸入
+            if (event) {
+                switch (event.key) {
+                    case "ArrowUp": case "w": dy = -1; break;
+                    case "ArrowDown": case "s": dy = 1; break;
+                    case "ArrowLeft": case "a": dx = -1; break;
+                    case "ArrowRight": case "d": dx = 1; break;
+                    case " ": case ".": case "5": // 等待/跳過回合
+                        dx = 0; dy = 0; break;
+                    default: return; 
+                }
+                event.preventDefault(); 
+            } 
+            // 處理虛擬按鈕點擊
+            else if (dir) {
+                switch (dir) {
+                    case "up": dy = -1; break;
+                    case "down": dy = 1; break;
+                    case "left": dx = -1; break;
+                    case "right": dx = 1; break;
+                    case "up-left": dx = -1; dy = -1; break;
+                    case "up-right": dx = 1; dy = -1; break;
+                    case "down-left": dx = -1; dy = 1; break;
+                    case "down-right": dx = 1; dy = 1; break;
+                    case "wait": dx = 0; dy = 0; break;
+                    default: return;
+                }
+            } else {
+                return; 
+            }
+
+            const playerMoved = attemptMove(player.x + dx, player.y + dy);
+            if (playerMoved) { monsterTurn(); }
+            drawScreen();
+        }
+
+        // 應用寶物效果
+        function applyItemEffect(item) {
+            const statToBoost = ROT.RNG.getUniform() < 0.5 ? 'attack' : 'defense';
+            const boostAmount = 1; 
+            
+            player[statToBoost] += boostAmount;
+            
+            logMessage(`你拾取了寶物 (!)。${statToBoost === 'attack' ? '攻擊力' : '防禦力'} +${boostAmount}！`);
+            updateSidebar();
+        }
+
+        // 檢查是否升級
+        function checkLevelUp() {
+            let leveledUp = false;
+
+            while (player.exp >= player.expToNextLevel) {
+                player.level += 1; 
+                leveledUp = true;
+                
+                player.exp -= player.expToNextLevel; 
+                player.expToNextLevel = 10 + player.level * 10; 
+                
+                // 提升能力值
+                player.maxHp += 5;
+                player.hp = player.maxHp; 
+                player.attack += 2;
+                player.defense += 1;
+
+                logMessage(`**恭喜！你升級到 Level ${player.level}！** HP+5, ATK+2, DEF+1。`);
+            }
+
+            if (leveledUp) {
+                updateSidebar();
+            }
+        }
+
+        // 玩家移動/戰鬥/拾取邏輯
+        function attemptMove(newX, newY) {
+            const key = `${newX},${newY}`;
+            const targetEntity = entities.find(e => e.x === newX && e.y === newY && !e.isPlayer && !e.isItem);
+
+            if (TILE_MAP[key] === '#') {
+                logMessage(`牆壁擋住了你！`);
+                return false;
+            }
+            
+            const targetItem = entities.find(e => e.x === newX && e.y === newY && e.isItem);
+            if (targetItem) {
+                applyItemEffect(targetItem);
+                entities = entities.filter(e => e !== targetItem);
+                player.x = newX;
+                player.y = newY;
+                return true; 
+            }
+
+            if (targetEntity) {
+                combat(player, targetEntity);
+                return true; 
+            }
+
+            player.x = newX;
+            player.y = newY;
+            updateSidebar();
+            logMessage(`你移動了。`);
+            return true;
+        }
+
+
+        // 處理回合制戰鬥 (包含經驗值獲得)
+        function combat(attacker, defender) {
+            const rawDamage = attacker.attack;
+            const defense = defender.defense || 0; 
+            const damage = Math.max(0, rawDamage - defense); 
+            
+            defender.hp -= damage;
+            
+            let logMsg = `**${attacker.symbol} 攻擊了 ${defender.symbol}！造成 ${damage} 點傷害。** (${defender.symbol} HP: ${Math.max(0, defender.hp)})`;
+            
+            if (defender.hp <= 0) {
+                const gainedExp = defender.maxHp; 
+                player.exp += gainedExp;
+
+                logMsg += `<br>你擊敗了 ${defender.symbol}！獲得 ${gainedExp} 點經驗值。`;
+                
+                entities = entities.filter(e => e !== defender);
+                TILE_MAP[`${defender.x},${defender.y}`] = '.'; 
+                
+                checkLevelUp(); 
+                
+                logMessage(logMsg);
+                return;
+            }
+
+            if (attacker.isPlayer) {
+                const counterRawDamage = defender.attack;
+                const counterDefense = player.defense;
+                const counterDamage = Math.max(0, counterRawDamage - counterDefense);
+
+                player.hp -= counterDamage;
+                
+                logMsg += `<br>${defender.symbol} 反擊了你！你受到了 ${counterDamage} 點傷害。 HP: ${player.hp}/${player.maxHp}`;
+
+                if (player.hp <= 0) {
+                    player.hp = 0; 
+                    logMsg += `<br>**你被 ${defender.symbol} 擊敗了！遊戲結束。**`;
+                    window.removeEventListener("keydown", handleInput);
+                }
+            }
+            updateSidebar();
+            logMessage(logMsg);
+        }
+
+        // 怪物回合邏輯 (A* 尋路)
+        function monsterTurn() {
+            const monsters = entities.filter(e => !e.isPlayer && !e.isItem);
+            for (const monster of monsters) {
+                const dx = Math.abs(monster.x - player.x);
+                const dy = Math.abs(monster.y - player.y);
+                
+                if (dx <= 1 && dy <= 1) {
+                    combat(monster, player);
+                } else {
+                    const astar = new ROT.Path.AStar(player.x, player.y, isWalkable.bind(monster), { topology: 8 });
+                    const path = [];
+                    astar.compute(monster.x, monster.y, function(x, y) { path.push({x, y}); });
+                    
+                    if (path.length > 1) {
+                        const nextStep = path[1];
+                        if (isWalkable(nextStep.x, nextStep.y)) {
+                            monster.x = nextStep.x;
+                            monster.y = nextStep.y;
+                        }
+                    }
+                }
+                if (player.hp <= 0) break;
+            }
+        }
+
+        // 日誌記錄
+        function logMessage(message) {
+            document.getElementById("log").innerHTML = message;
+        }
+
+        // 側邊欄更新函式
+        function updateSidebar() {
+            document.getElementById("s_level").innerText = player.level;
+            document.getElementById("s_exp").innerText = player.exp;
+            document.getElementById("s_exp_next").innerText = player.expToNextLevel;
+            document.getElementById("s_hp").innerText = player.hp;
+            document.getElementById("s_maxhp").innerText = player.maxHp;
+            document.getElementById("s_atk").innerText = player.attack;
+            document.getElementById("s_def").innerText = player.defense;
+            document.getElementById("s_equipment").innerText = player.equipment;
+        }
+
+        // 啟動遊戲
+        window.onload = initGame;
+    </script>
+</body>
+</html>
