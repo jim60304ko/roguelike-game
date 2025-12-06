@@ -32,17 +32,17 @@
             border: 1px solid #444;
             background-color: #111;
             font-size: 13px;
-            overflow: hidden; /* 禁用捲軸 */
+            overflow: hidden; 
             box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
             display: flex;
-            flex-direction: column; /* 正常從上到下堆疊 */
+            flex-direction: column; 
         }
         #log-panel div {
             padding: 2px 0;
             border-bottom: 1px dashed #333;
-            line-height: 1.4; /* 增加行高，確保文字不重疊 */
-            max-height: 20px; /* 限制單行高度 */
-            overflow: hidden; /* 隱藏超出部分的文字 */
+            line-height: 1.4; 
+            max-height: 20px; 
+            overflow: hidden; 
             flex-shrink: 0; 
         }
         #log-panel h3 {
@@ -54,6 +54,29 @@
             display: flex;
             flex-direction: column;
         }
+
+        /* 頂部控制區域 */
+        #top-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+
+        #reset-player-btn {
+            padding: 5px 10px;
+            background-color: #4a0000;
+            color: #ffaa00;
+            border: 1px solid #ffaa00;
+            cursor: pointer;
+            font-size: 12px;
+            border-radius: 3px;
+        }
+        #reset-player-btn:hover {
+             background-color: #6a0000;
+        }
+
 
         #game-container {
             border: 1px solid #444;
@@ -157,6 +180,11 @@
         </div>
 
         <div id="game-wrapper">
+             <div id="top-controls">
+                 <p>🔄 **當前回合:** <span id="s_turn">0</span> | 🧭 **地圖塊:** (<span id="s_mapX">0</span>, <span id="s_mapY">0</span>)</p>
+                 <button id="reset-player-btn" onclick="resetPlayerPosition()">⚠️ 玩家消失？點此重置</button>
+            </div>
+
             <div id="game-container">
                 <div id="game-display"></div>
                 
@@ -164,9 +192,7 @@
                     <p>GAME OVER</p>
                     <button onclick="restartGame()">重新開始</button>
                 </div>
-
             </div>
-            <p>🔄 **當前回合:** <span id="s_turn">0</span> | 🧭 **地圖塊:** (<span id="s_mapX">0</span>, <span id="s_mapY">0</span>)</p>
         </div>
 
         <div id="right-panel">
@@ -244,13 +270,12 @@
             document.getElementById("game-over-screen").style.display = 'none';
 
             if (!display) {
-                // 關鍵修正：將 Display 設置恢復到最基本的純文字模式，以確保地圖顯示
+                // ROT.Display 設置：使用最穩定的純文字模式
                 display = new ROT.Display({
                     width: WIDTH, 
                     height: HEIGHT, 
                     spacing: 1.1, 
                     bg: '#000' 
-                    // 不指定 layout，讓它使用預設的 'text' 或 'rect'
                 });
                 document.getElementById("game-display").appendChild(display.getContainer());
             }
@@ -296,6 +321,54 @@
             logMessage(`--- 你的旅程結束了。總回合數: ${turnCounter}，最終等級: ${player.level} ---`);
             document.getElementById("game-over-screen").style.display = 'flex';
         }
+        
+        // 修正：手動重置玩家位置 (確保繪製)
+        window.resetPlayerPosition = function() {
+            if (!gameRunning) return;
+            
+            const base_x = currentMapX * WIDTH;
+            const base_y = currentMapY * HEIGHT;
+            const center_x = base_x + Math.floor(WIDTH / 2);
+            const center_y = base_y + Math.floor(HEIGHT / 2);
+
+            let found = false;
+            // 從中心點開始，向外擴散最多 10 格尋找可通行座標
+            for (let i = 0; i < 10; i++) {
+                // 嘗試中心點
+                if (TILE_MAP[`${center_x},${center_y}`] === '.' && !entities.find(e => e.x === center_x && e.y === center_y && e !== player)) {
+                    player.x = center_x;
+                    player.y = center_y;
+                    found = true;
+                    break;
+                }
+                
+                // 嘗試隨機偏移
+                const checkX = center_x + ROT.RNG.getUniformInt(-i, i);
+                const checkY = center_y + ROT.RNG.getUniformInt(-i, i);
+                
+                // 確保檢查的點在當前地圖塊的範圍內
+                if (checkX >= base_x && checkX < base_x + WIDTH && checkY >= base_y && checkY < base_y + HEIGHT) {
+                    if (TILE_MAP[`${checkX},${checkY}`] === '.' && !entities.find(e => e.x === checkX && e.y === checkY && e !== player)) {
+                        player.x = checkX;
+                        player.y = checkY;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if (found) {
+                logMessage(`[手動重置] 玩家位置已校正到地圖中心附近。`);
+            } else {
+                logMessage(`[手動重置] 警告：無法找到可通行位置，玩家被強制放置在中心。`);
+                player.x = center_x;
+                player.y = center_y;
+            }
+            
+            // 關鍵修正：確保玩家圖案在重繪前被加入視野計算，並強制清空重繪
+            fov.compute(player.x, player.y, 8, function(){}); // 重新計算視野
+            drawScreen(true); // 強制清空重繪
+        }
 
         // --- 2. 地圖生成與邊界檢查 ---
 
@@ -319,20 +392,27 @@
             }
         }
 
+        // 修正：調整邊界檢查的寬容度
         function checkBoundaryAndGenerate() {
             let newMapX = currentMapX;
             let newMapY = currentMapY;
+            
+            const minX = currentMapX * WIDTH;
+            const maxX = (currentMapX + 1) * WIDTH;
+            const minY = currentMapY * HEIGHT;
+            const maxY = (currentMapY + 1) * HEIGHT;
 
             // 檢查是否超出當前地圖塊的 X 軸邊界
-            if (player.x < currentMapX * WIDTH) { newMapX--; } 
-            else if (player.x >= (currentMapX + 1) * WIDTH) { newMapX++; }
+            if (player.x < minX) { newMapX--; } 
+            else if (player.x >= maxX) { newMapX++; }
 
             // 檢查是否超出當前地圖塊的 Y 軸邊界
-            if (player.y < currentMapY * HEIGHT) { newMapY--; } 
-            else if (player.y >= (currentMapY + 1) * HEIGHT) { newMapY++; }
+            if (player.y < minY) { newMapY--; } 
+            else if (player.y >= maxY) { newMapY++; }
 
             if (newMapX !== currentMapX || newMapY !== currentMapY) {
                 
+                // 過濾掉舊地圖上的所有非玩家實體
                 entities = entities.filter(e => e.isPlayer); 
 
                 const oldMapX = currentMapX;
@@ -340,19 +420,25 @@
                 currentMapX = newMapX;
                 currentMapY = newMapY;
                 
-                // 重新定位玩家到新地圖塊的對應邊緣
+                // 重新定位玩家到新地圖塊的對應邊緣，內縮一格
                 if (newMapX < oldMapX) {
-                    player.x = (currentMapX * WIDTH) + (WIDTH - 1);
+                    player.x = (currentMapX * WIDTH) + (WIDTH - 1) - 1; 
                 } else if (newMapX > oldMapX) {
-                    player.x = (currentMapX * WIDTH);
+                    player.x = (currentMapX * WIDTH) + 1; 
                 }
                 
                 if (newMapY < oldMapY) {
-                    player.y = (currentMapY * HEIGHT) + (HEIGHT - 1);
+                    player.y = (currentMapY * HEIGHT) + (HEIGHT - 1) - 1; 
                 } else if (newMapY > oldMapY) {
-                    player.y = (currentMapY * HEIGHT);
+                    player.y = (currentMapY * HEIGHT) + 1; 
                 }
                 
+                // 檢查新邊緣位置是否可通行
+                if (TILE_MAP[`${player.x},${player.y}`] === '#') {
+                    player.x = currentMapX * WIDTH + Math.floor(WIDTH / 2);
+                    player.y = currentMapY * HEIGHT + Math.floor(HEIGHT / 2);
+                }
+
                 generateMap(currentMapX, currentMapY);
                 logMessage(`***進入地圖塊 (${currentMapX}, ${currentMapY})。***`);
                 
@@ -430,38 +516,71 @@
         }
 
         // 玩家消失修正：在繪製前確保玩家在當前地圖塊上
-        function drawScreen() {
-            display.clear(); 
+        function drawScreen(forceRedraw = false) {
+            const offsetX = currentMapX * WIDTH;
+            const offsetY = currentMapY * HEIGHT;
             
             // 強制檢查機制：在繪製前確保玩家在當前地圖塊上
             const mapSwitched = checkBoundaryAndGenerate();
             if (mapSwitched) {
                 logMessage(`[系統] 偵測到玩家在邊界外，已強制切換地圖。`);
             }
+
+            // 關鍵修正：如果需要強制重繪，則先清空整個顯示器
+            if (forceRedraw) {
+                display.clear();
+            }
             
-            const offsetX = currentMapX * WIDTH;
-            const offsetY = currentMapY * HEIGHT;
-            
+            // 存儲需要繪製的圖案，以便最後單獨繪製玩家
+            const cellsToDraw = {};
+
             fov.compute(player.x, player.y, 8, function(x, y, r, visibility) {
                 const key = `${x},${y}`;
                 const tile = TILE_MAP[key] || '#';
-                const entityHere = entities.find(e => e.x === x && e.y === y);
+                const entityHere = entities.find(e => e.x === x && e.y === y && e !== player); // 排除玩家
                 
                 const screenX = x - offsetX;
                 const screenY = y - offsetY;
 
                 if (screenX < 0 || screenX >= WIDTH || screenY < 0 || screenY >= HEIGHT) return; 
 
+                let symbol, color;
+
                 if (visibility) {
-                    const symbol = entityHere ? entityHere.symbol : tile;
-                    const color = entityHere ? entityHere.color : (tile === '#' ? '#888' : '#333');
-                    display.draw(screenX, screenY, symbol, color, '#000');
+                    symbol = entityHere ? entityHere.symbol : tile;
+                    color = entityHere ? entityHere.color : (tile === '#' ? '#888' : '#333');
+                    cellsToDraw[`${screenX},${screenY}`] = [symbol, color, '#000'];
                 } else {
-                    const symbol = tile === '#' ? '#' : '.';
-                    const color = tile === '#' ? '#111' : '#080808';
-                    display.draw(screenX, screenY, symbol, color, '#000');
+                    symbol = tile === '#' ? '#' : '.';
+                    color = tile === '#' ? '#111' : '#080808';
+                    cellsToDraw[`${screenX},${screenY}`] = [symbol, color, '#000'];
                 }
             });
+
+            // 繪製所有地圖塊和實體
+            for (const key in cellsToDraw) {
+                const [screenX, screenY] = key.split(',').map(Number);
+                const [symbol, fg, bg] = cellsToDraw[key];
+                display.draw(screenX, screenY, symbol, fg, bg);
+            }
+
+            // 關鍵修正：單獨繪製玩家，確保其在最頂層且總是被繪製
+            const playerScreenX = player.x - offsetX;
+            const playerScreenY = player.y - offsetY;
+
+            if (playerScreenX >= 0 && playerScreenX < WIDTH && playerScreenY >= 0 && playerScreenY < HEIGHT) {
+                 // 檢查玩家位置是否在視野內 (避免將玩家顯示在黑暗中，除非是強制重繪)
+                let playerVisible = false;
+                fov.compute(player.x, player.y, 8, function(x, y, r, visibility) {
+                    if (x === player.x && y === player.y) {
+                        playerVisible = visibility;
+                    }
+                });
+                
+                if (playerVisible || forceRedraw) {
+                    display.draw(playerScreenX, playerScreenY, player.symbol, player.color, '#000');
+                }
+            }
         }
         
         function handleInput(event, dir = null) {
@@ -563,7 +682,10 @@
         function combat(attacker, defender) {
             const rawDamage = attacker.attack;
             const defense = defender.defense || 0; 
-            const damage = Math.max(0, rawDamage - defense); 
+            
+            // 傷害機制修正：確保最低傷害為 1
+            const calculatedDamage = rawDamage - defense; 
+            const damage = Math.max(1, calculatedDamage); 
             
             defender.hp -= damage;
             
@@ -586,7 +708,10 @@
             if (attacker.isPlayer) {
                 const counterRawDamage = defender.attack;
                 const counterDefense = player.defense;
-                const counterDamage = Math.max(0, counterRawDamage - counterDefense);
+                
+                // 傷害機制修正：確保最低傷害為 1
+                const counterCalculatedDamage = counterRawDamage - counterDefense;
+                const counterDamage = Math.max(1, counterCalculatedDamage); 
 
                 player.hp -= counterDamage;
                 
@@ -626,7 +751,7 @@
             }
         }
 
-        // --- 5. UI 更新 (日誌數量控制與顯示順序調整) ---
+        // --- 5. UI 更新 ---
 
         function logMessage(message) {
             const timestamp = new Date().toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
